@@ -1,3 +1,4 @@
+# sample.py
 import os
 import argparse
 import torch
@@ -9,6 +10,7 @@ from models.cvae import CVAE
 
 def sample(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
 
     if args.conditional:
         model = CVAE(
@@ -34,28 +36,58 @@ def sample(args):
         z = torch.randn(args.num_samples, args.latent_dim).to(device)
 
         if args.conditional:
-            labels = torch.randint(0, args.num_classes, (args.num_samples,), device=device)
+            labels = torch.randint(
+                low=0,
+                high=args.num_classes,
+                size=(args.num_samples,),
+                device=device
+            )
             samples = model.decode(z, labels)
         else:
             samples = model.decode(z)
 
-        save_generated_images(samples, os.path.join(args.output_dir, "random_samples.png"), nrow=4)
+        random_path = os.path.join(args.output_dir, "random_samples.png")
+        save_generated_images(samples, random_path, nrow=4)
+        print(f"Saved random samples to: {random_path}")
 
-        # interpolation
+        # latent interpolation
         z1 = torch.randn(args.latent_dim).to(device)
         z2 = torch.randn(args.latent_dim).to(device)
 
         if args.conditional:
-            label = torch.tensor([args.class_id] * args.interp_steps, device=device)
-            interp_imgs = interpolate_latent(model, z1, z2, steps=args.interp_steps, device=device, labels=label)
+            label = torch.tensor(
+                [args.class_id] * args.interp_steps,
+                device=device
+            )
+            interp_imgs = interpolate_latent(
+                model,
+                z1,
+                z2,
+                steps=args.interp_steps,
+                device=device,
+                labels=label
+            )
         else:
-            interp_imgs = interpolate_latent(model, z1, z2, steps=args.interp_steps, device=device)
+            interp_imgs = interpolate_latent(
+                model,
+                z1,
+                z2,
+                steps=args.interp_steps,
+                device=device
+            )
 
-        save_generated_images(interp_imgs, os.path.join(args.output_dir, "interpolation.png"), nrow=args.interp_steps)
+        interp_path = os.path.join(args.output_dir, "interpolation.png")
+        save_generated_images(
+            interp_imgs,
+            interp_path,
+            nrow=args.interp_steps
+        )
+        print(f"Saved interpolation to: {interp_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
     parser.add_argument("--ckpt_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="./outputs/test_samples")
 

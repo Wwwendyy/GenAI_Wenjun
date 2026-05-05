@@ -1,3 +1,4 @@
+# train.py
 import os
 import argparse
 import torch
@@ -20,6 +21,14 @@ def train(args):
     )
 
     num_classes = len(train_dataset.classes)
+
+    print("Data root:", args.data_dir)
+    print("Train size:", len(train_dataset))
+    print("Valid size:", len(valid_dataset))
+    if test_dataset is not None:
+        print("Test size:", len(test_dataset))
+    else:
+        print("Test size: No test folder found")
     print("Number of classes:", num_classes)
     print("Class to idx:", train_dataset.class_to_idx)
 
@@ -43,8 +52,11 @@ def train(args):
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(args.ckpt_dir, exist_ok=True)
 
+    best_valid_loss = float("inf")
+
     for epoch in range(args.epochs):
         model.train()
+
         total_loss_epoch = 0.0
         total_recon_epoch = 0.0
         total_kl_epoch = 0.0
@@ -58,14 +70,20 @@ def train(args):
             if args.conditional:
                 recon, mu, logvar = model(images, labels)
                 loss, recon_loss, kl_loss = cvae_loss_function(
-                    recon, images, mu, logvar,
+                    recon,
+                    images,
+                    mu,
+                    logvar,
                     beta=args.beta,
                     recon_loss_type=args.recon_loss_type
                 )
             else:
                 recon, mu, logvar = model(images)
                 loss, recon_loss, kl_loss = vae_loss_function(
-                    recon, images, mu, logvar,
+                    recon,
+                    images,
+                    mu,
+                    logvar,
                     beta=args.beta,
                     recon_loss_type=args.recon_loss_type
                 )
@@ -79,8 +97,8 @@ def train(args):
 
             if batch_idx % args.log_interval == 0:
                 print(
-                    f"Epoch [{epoch+1}/{args.epochs}] "
-                    f"Batch [{batch_idx}/{len(dataloader)}] "
+                    f"Epoch [{epoch + 1}/{args.epochs}] "
+                    f"Batch [{batch_idx}/{len(train_loader)}] "
                     f"Loss: {loss.item():.4f} "
                     f"Recon: {recon_loss.item():.4f} "
                     f"KL: {kl_loss.item():.4f}"
@@ -90,39 +108,104 @@ def train(args):
         avg_recon = total_recon_epoch / len(train_loader)
         avg_kl = total_kl_epoch / len(train_loader)
 
-        print(f"\nEpoch {epoch+1} Summary:")
+        print(f"\nEpoch {epoch + 1} Train Summary:")
         print(f"Avg Loss:  {avg_loss:.4f}")
         print(f"Avg Recon: {avg_recon:.4f}")
-        print(f"Avg KL:    {avg_kl:.4f}\n")
+        print(f"Avg KL:    {avg_kl:.4f}")
 
-        # 每个 epoch 保存一些随机生成图
+        # validation
+        model.eval()
+        valid_loss_epoch = 0.0
+        valid_recon_epoch = 0.0
+        valid_kl_epoch = 0.0
+
+        with torch.no_grad():
+            for images, labels in valid_loader:
+                images = images.to(device)
+                labels = labels.to(device)
+
+                if args.conditional:
+                    recon, mu, logvar = model(images, labels)
+                    loss, recon_loss, kl_loss = cvae_loss_function(
+                        recon,
+                        images,
+                        mu,
+                        logvar,
+                        beta=args.beta,
+                        recon_loss_type=args.recon_loss_type
+                    )
+                else:
+                    recon, mu, logvar = model(images)
+                    loss, recon_loss, kl_loss = vae_loss_function(
+                        recon,
+                        images,
+                        mu,
+                        logvar,
+                        beta=args.beta,
+                        recon_loss_type=args.recon_loss_type
+                    )
+
+                valid_loss_epoch += loss.item()
+                valid_recon_epoch += recon_loss.item()
+                valid_kl_epoch += kl_loss.item()
+
+        avg_valid_loss = valid_loss_epoch / len(valid_loader)
+        avg_valid_recon = valid_recon_epoch / len(valid_loader)
+        avg_valid_kl = valid_kl_epoch / len(valid_loader)
+
+        print(f"\nEpoch {epoch + 1} Valid Summary:")
+        print(f"Valid Loss:  {avg_valid_loss:.4f}")
+        print(f"Valid Recon: {avg_valid_recon:.4f}")
+        print(f"Valid KL:    {avg_valid_kl:.4f}\n")
+
+        # Save random generated samples after each epoch
         model.eval()
         with torch.no_grad():
             z = torch.randn(16, args.latent_dim).to(device)
 
             if args.conditional:
-                sample_labels = torch.arange(16).to(device) % num_classes
+                sample_labels = torch.arange(16, device=device) % num_classes
                 samples = model.decode(z, sample_labels)
             else:
                 samples = model.decode(z)
 
             save_generated_images(
                 samples,
-                os.path.join(args.output_dir, f"epoch_{epoch+1:03d}.png"),
+                os.path.join(args.output_dir, f"epoch_{epoch + 1:03d}.png"),
                 nrow=4
             )
 
-        torch.save(
-            model.state_dict(),
-            os.path.join(args.ckpt_dir, f"model_epoch_{epoch+1:03d}.pth")
-        )
+        # Save checkpoint every epoch
+        ckpt_path = os.path.join(args.ckpt_dir, f"model_epoch_{epoch + 1:03d}.pth")
+        torch.save(model.state_dict(), ckpt_path)
+        print(f"Saved checkpoint: {ckpt_path}")
+
+        # Save best checkpoint
+        if avg_valid_loss < best_valid_loss:
+            best_valid_loss = avg_valid_loss
+            best_path = os.path.join(args.ckpt_dir, "best_model.pth")
+            torch.save(model.state_dict(), best_path)
+            print(f"Saved best model: {best_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="./data/flowers")
-    parser.add_argument("--output_dir", type=str, default="./outputs/samples")
-    parser.add_argument("--ckpt_dir", type=str, default="./outputs/checkpoints")
+
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="./flower_dataset/dataset"
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./outputs/samples"
+    )
+    parser.add_argument(
+        "--ckpt_dir",
+        type=str,
+        default="./outputs/checkpoints"
+    )
 
     parser.add_argument("--image_size", type=int, default=64)
     parser.add_argument("--batch_size", type=int, default=64)
@@ -135,7 +218,12 @@ if __name__ == "__main__":
 
     parser.add_argument("--conditional", action="store_true")
     parser.add_argument("--label_emb_dim", type=int, default=32)
-    parser.add_argument("--recon_loss_type", type=str, default="mse", choices=["bce", "mse"])
+    parser.add_argument(
+        "--recon_loss_type",
+        type=str,
+        default="mse",
+        choices=["bce", "mse"]
+    )
 
     args = parser.parse_args()
     train(args)
